@@ -66,6 +66,19 @@ function is_valid_ip() {
     return 1
 }
 
+# Print the IPv4 address of the single-node management cluster: the address
+# HOST_CLUSTER_API resolves to, else the cluster VM's IP.
+function resolve_sno_management_ip() {
+    local ip
+
+    ip=$(getent ahostsv4 "${HOST_CLUSTER_API}" 2>/dev/null | awk 'NR == 1 { print $1 }' || true)
+    if ! is_valid_ip "${ip}"; then
+        ip=$(find_vm_ip "${VM_PREFIX}" 2>/dev/null || true)
+    fi
+    is_valid_ip "${ip}" || return 1
+    echo "${ip}"
+}
+
 # -----------------------------------------------------------------------------
 # Cluster management functions
 # -----------------------------------------------------------------------------
