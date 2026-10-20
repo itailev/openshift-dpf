@@ -15,6 +15,15 @@ fi
 function render_argus_manifests() {
     local src="${MANIFESTS_DIR}/argus"
     local dst="${GENERATED_POST_INSTALL_DIR}"
+    local telemetry_host="${INGRESS_VIP}"
+
+    if [ "${VM_COUNT}" -eq 1 ]; then
+        if ! telemetry_host=$(resolve_sno_management_ip); then
+            log "ERROR" "Unable to resolve the SNO management address for Argus telemetry"
+            return 1
+        fi
+        log "INFO" "Argus SNO: streaming alerts to ${telemetry_host}"
+    fi
 
     mkdir -p "${dst}"
     update_file_multi_replace "${src}/01-servicetemplate.yaml" "${dst}/argus-01-servicetemplate.yaml" \
@@ -23,7 +32,7 @@ function render_argus_manifests() {
         "<ARGUS_IMAGE>" "${ARGUS_IMAGE}" \
         "<ARGUS_IMAGE_PULL_SECRET>" "${ARGUS_IMAGE_PULL_SECRET}"
     update_file_multi_replace "${src}/02-configuration.yaml" "${dst}/argus-02-configuration.yaml" \
-        "<ARGUS_TELEMETRY_ADDRESS>" "${INGRESS_VIP}:${ARGUS_TELEMETRY_NODE_PORT}"
+        "<ARGUS_TELEMETRY_ADDRESS>" "${telemetry_host}:${ARGUS_TELEMETRY_NODE_PORT}"
     cp "${src}/03-logs-namespace.yaml" "${dst}/argus-03-logs-namespace.yaml"
     update_file_multi_replace "${src}/04-loki.yaml" "${dst}/argus-04-loki.yaml" \
         "<ARGUS_LOGS_STORAGE_CLASS>" "${ETCD_STORAGE_CLASS}"

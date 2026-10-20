@@ -204,11 +204,7 @@ resolve_zero_trust_bfb_registry_host() {
         return 0
     fi
 
-    resolved_host=$(getent ahostsv4 "${HOST_CLUSTER_API}" 2>/dev/null | awk 'NR == 1 { print $1 }' || true)
-    if ! is_valid_ip "${resolved_host}"; then
-        resolved_host=$(find_vm_ip "${VM_PREFIX}" 2>/dev/null || true)
-    fi
-    if ! is_valid_ip "${resolved_host}"; then
+    if ! resolved_host=$(resolve_sno_management_ip); then
         log "ERROR" "Unable to resolve the SNO management address for the Zero Trust BFB registry"
         return 1
     fi
