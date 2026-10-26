@@ -73,32 +73,37 @@ function prepare_zero_trust_service_manifests() {
     # Keep Zero Trust service outputs isolated from the trusted post-install set.
     find "${GENERATED_ZT_SERVICE_DIR}" -maxdepth 1 -type f -name "*.yaml" -delete
 
-    validate_zero_trust_dpu_serials || return 1
+    get_kubeconfig
 
     local dpu_values=""
-    local dpu_entry index serial serial_variable vlan1 vlan2 autonomous_system
-    while IFS= read -r serial_variable; do
-        serial="${!serial_variable:-}"
-        [ -n "${serial}" ] || continue
+    local dpu_entry host bmc_ip device position vlan1 vlan2 autonomous_system
+    while IFS= read -r host; do
+        position=0
+        while IFS= read -r bmc_ip; do
+            if ! retry 60 10 --no-dump-on-failure zero_trust_dpudevice_exists "${bmc_ip}" ||
+               ! device=$(zero_trust_dpudevice_name "${bmc_ip}"); then
+                log [ERROR] "No single DPUDevice found for WORKER_${host} DPU BMC ${bmc_ip}; DPU discovery must create it before the HBN configuration"
+                return 1
+            fi
 
-        index="${serial_variable#DPU}"
-        index="${index%_SERIAL}"
-        index=$((10#${index}))
-        vlan1=$((10 + index))
-        vlan2=$((20 + index))
-        autonomous_system=$((65001 + (index * 100)))
+            # WORKER_1 -> VLANs 11/21, AS 65101; WORKER_2 -> VLANs 12/22, AS 65201.
+            # Additional DPUs of a host keep its VLANs and take the next AS
+            # numbers in DPU BMC IP order, since every DPU needs its own BGP AS.
+            vlan1=$((10 + host))
+            vlan2=$((20 + host))
+            autonomous_system=$((65001 + (host * 100) + position))
+            position=$((position + 1))
 
-        # Extend the per-DPU mapping shown in the installation manifest:
-        # DPU1 -> VLANs 11/21, AS 65101; DPU2 -> VLANs 12/22, AS 65201.
-        printf -v dpu_entry \
-            '            - hostnamePattern: "dpu-node-%s*"\n              values:\n                vlan1: %d\n                vlan2: %d\n                bgp_autonomous_system: %d' \
-            "${serial}" "${vlan1}" "${vlan2}" "${autonomous_system}"
-        if [ -n "${dpu_values}" ]; then
-            dpu_values+=$'\n'
-        fi
-        dpu_values+="${dpu_entry}"
-        log [INFO] "Adding ${serial_variable}=${serial} to the Zero Trust HBN configuration"
-    done < <(list_dpu_serial_variables)
+            printf -v dpu_entry \
+                '            - hostnamePattern: "%s-%s*"\n              values:\n                vlan1: %d\n                vlan2: %d\n                bgp_autonomous_system: %d' \
+                "$(zero_trust_dpu_node_name "${host}")" "${device}" "${vlan1}" "${vlan2}" "${autonomous_system}"
+            if [ -n "${dpu_values}" ]; then
+                dpu_values+=$'\n'
+            fi
+            dpu_values+="${dpu_entry}"
+            log [INFO] "Adding WORKER_${host} DPU ${device} (BMC ${bmc_ip}) to the Zero Trust HBN configuration"
+        done < <(list_zero_trust_host_dpu_bmc_ips "${host}" | sort -V)
+    done < <(list_zero_trust_dpu_hosts)
 
     local hbn_helm_repo_url="${HBN_HELM_REPO_URL:-https://helm.ngc.nvidia.com/nvidia/doca}"
     local hbn_helm_chart_version="${HBN_HELM_CHART_VERSION:-3.4.0}"
@@ -382,18 +387,20 @@ function update_zero_trust_hbn_configuration() {
     log [INFO] "Applying Zero Trust HBN configuration"
     retry 5 30 apply_manifest "${manifest}" true
 
-    local per_dpu_values serial serial_variable
+    local per_dpu_values host bmc_ip device pattern
     per_dpu_values=$(oc get dpuserviceconfiguration.svc.dpu.nvidia.com hbn \
         -n dpf-operator-system \
         -o jsonpath='{.spec.serviceConfiguration.helmChart.values.configuration.perDPUValuesYAML}')
-    while IFS= read -r serial_variable; do
-        serial="${!serial_variable:-}"
-        [ -n "${serial}" ] || continue
-        if ! grep -Fq "hostnamePattern: \"dpu-node-${serial}*\"" <<< "${per_dpu_values}"; then
-            log [ERROR] "Applied HBN configuration is missing ${serial_variable}=${serial}"
-            return 1
-        fi
-    done < <(list_dpu_serial_variables)
+    while IFS= read -r host; do
+        while IFS= read -r bmc_ip; do
+            device=$(zero_trust_dpudevice_name "${bmc_ip}") || device="unknown"
+            pattern="$(zero_trust_dpu_node_name "${host}")-${device}*"
+            if ! grep -Fq "hostnamePattern: \"${pattern}\"" <<< "${per_dpu_values}"; then
+                log [ERROR] "Applied HBN configuration is missing WORKER_${host} DPU BMC ${bmc_ip} (${pattern})"
+                return 1
+            fi
+        done < <(list_zero_trust_host_dpu_bmc_ips "${host}")
+    done < <(list_zero_trust_dpu_hosts)
 
     log [INFO] "Zero Trust HBN per-DPU configuration applied successfully"
 }

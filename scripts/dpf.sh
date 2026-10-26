@@ -507,18 +507,10 @@ function apply_remaining() {
 function wait_for_dpf_provisioning_api() {
     log [INFO] "Waiting for the DPF provisioning API..."
     if [ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" ]; then
-        local provisioning_crds=(
-            crd/dpudevices.provisioning.dpu.nvidia.com
-            crd/dpunodes.provisioning.dpu.nvidia.com
-        )
-        if [ "${ZT_DPU_DISCOVERY_MODE}" = "scanning" ]; then
-            provisioning_crds+=(
-                crd/dpudiscoveries.provisioning.dpu.nvidia.com
-            )
-        fi
-
         oc wait --for=condition=Established \
-            "${provisioning_crds[@]}" \
+            crd/dpudevices.provisioning.dpu.nvidia.com \
+            crd/dpunodes.provisioning.dpu.nvidia.com \
+            crd/dpudiscoveries.provisioning.dpu.nvidia.com \
             --timeout=10m
     fi
 
@@ -547,90 +539,124 @@ function apply_zero_trust_dpu_discovery() {
     apply_manifest "${discovery_manifest}" true
 }
 
-function apply_static_zero_trust_dpu_inventory() {
-    local apply_always="${1:-true}"
-    local inventory_dir="${GENERATED_DIR}/zero-trust-inventory"
-    local serial_variable serial device_manifest node_manifest
-
-    log [INFO] "Applying static Zero Trust DPUDevice and DPUNode resources"
-    while IFS= read -r serial_variable; do
-        serial="${!serial_variable:-}"
-        [ -n "${serial}" ] || continue
-
-        device_manifest="${inventory_dir}/dpudevice-${serial}.yaml"
-        node_manifest="${inventory_dir}/dpunode-${serial}.yaml"
-        if [ ! -f "${device_manifest}" ] || [ ! -f "${node_manifest}" ]; then
-            log [ERROR] "Static Zero Trust inventory manifests not found for ${serial}"
-            return 1
-        fi
-        apply_manifest "${device_manifest}" "${apply_always}" || return 1
-        apply_manifest "${node_manifest}" "${apply_always}" || return 1
-    done < <(list_dpu_serial_variables)
+function print_zero_trust_dpudevices() {
+    oc get dpudevices.provisioning.dpu.nvidia.com -n dpf-operator-system \
+        -o custom-columns='NAME:.metadata.name,BMC_IP:.spec.bmcIp,SERIAL:.spec.serialNumber,DPUNODE:.metadata.labels.provisioning\.dpu\.nvidia\.com/dpunode-name' || true
 }
 
-function apply_zero_trust_dpu_inventory_resources() {
-    local apply_always="${1:-true}"
+function wait_for_zero_trust_dpudevices() {
+    local host bmc_ip
 
-    if [ "${ZT_DPU_DISCOVERY_MODE}" = "scanning" ]; then
-        apply_zero_trust_dpu_discovery
-    else
-        apply_static_zero_trust_dpu_inventory "${apply_always}"
-    fi
-}
-
-function wait_for_zero_trust_dpu_inventory_resources() {
-    local serial_variable serial
-
-    while IFS= read -r serial_variable; do
-        serial="${!serial_variable:-}"
-        [ -n "${serial}" ] || continue
-
-        if ! wait_for_resource dpf-operator-system \
-            dpudevices.provisioning.dpu.nvidia.com "${serial}" 60 10; then
-            log [ERROR] "DPUDevice ${serial} was not available within 10 minutes"
-            if [ "${ZT_DPU_DISCOVERY_MODE}" = "scanning" ]; then
-                oc get dpudiscoveries.provisioning.dpu.nvidia.com \
-                    -n dpf-operator-system || true
+    while IFS= read -r host; do
+        while IFS= read -r bmc_ip; do
+            log [INFO] "Waiting for the DPUDevice of WORKER_${host} DPU BMC ${bmc_ip}..."
+            if ! retry 60 10 --no-dump-on-failure zero_trust_dpudevice_exists "${bmc_ip}"; then
+                log [ERROR] "No single DPUDevice with spec.bmcIp ${bmc_ip} appeared within 10 minutes"
+                oc get dpudiscoveries.provisioning.dpu.nvidia.com -n dpf-operator-system || true
+                print_zero_trust_dpudevices
+                return 1
             fi
+        done < <(list_zero_trust_host_dpu_bmc_ips "${host}")
+    done < <(list_zero_trust_dpu_hosts)
+}
+
+# Print the BMC IPs of the DPUDevices listed by DPUNode <name>, sorted.
+function zero_trust_dpunode_bmc_ips() {
+    local node_name="$1"
+    local devices device bmc_ip
+
+    devices=$(oc get dpunodes.provisioning.dpu.nvidia.com "${node_name}" \
+        -n dpf-operator-system \
+        -o jsonpath='{range .spec.dpus[*]}{.name}{"\n"}{end}') || return 1
+    while IFS= read -r device; do
+        [ -n "${device}" ] || continue
+        bmc_ip=$(oc get dpudevices.provisioning.dpu.nvidia.com "${device}" \
+            -n dpf-operator-system \
+            -o jsonpath='{.spec.bmcIp}' 2>/dev/null || true)
+        echo "${bmc_ip:-missing-dpudevice-${device}}"
+    done <<< "${devices}" | sort
+}
+
+function apply_zero_trust_dpunodes() {
+    local inventory_dir="${GENERATED_DIR}/zero-trust-inventory"
+    local host node_name bmc_ip device dpu_devices desired current manifest
+
+    mkdir -p "${inventory_dir}"
+    while IFS= read -r host; do
+        node_name=$(zero_trust_dpu_node_name "${host}")
+        desired=$(list_zero_trust_host_dpu_bmc_ips "${host}" | sort)
+
+        if oc get dpunodes.provisioning.dpu.nvidia.com "${node_name}" \
+            -n dpf-operator-system &>/dev/null; then
+            current=$(zero_trust_dpunode_bmc_ips "${node_name}") || return 1
+            if [ "${current}" = "${desired}" ]; then
+                log [INFO] "DPUNode ${node_name} already matches WORKER_${host}_DPU_BMC_IPS"
+                continue
+            fi
+            log [ERROR] "DPUNode ${node_name} lists DPU BMC IPs '${current//$'\n'/ }', but WORKER_${host}_DPU_BMC_IPS lists '${desired//$'\n'/ }'"
+            log [ERROR] "Run 'make scale-in-zt-dpus DPU_NODE=${node_name}' first, then rerun scale-out"
             return 1
         fi
 
-        if ! wait_for_resource dpf-operator-system \
-            dpunodes.provisioning.dpu.nvidia.com "dpu-node-${serial}" 60 10; then
-            log [ERROR] "DPUNode dpu-node-${serial} was not available within 10 minutes"
-            oc get dpudevices.provisioning.dpu.nvidia.com \
-                -n dpf-operator-system || true
-            return 1
+        dpu_devices=""
+        while IFS= read -r bmc_ip; do
+            if ! device=$(zero_trust_dpudevice_name "${bmc_ip}"); then
+                log [ERROR] "No single DPUDevice found for DPU BMC ${bmc_ip}"
+                print_zero_trust_dpudevices
+                return 1
+            fi
+            dpu_devices+="    - name: ${device}"$'\n'
+        done < <(list_zero_trust_host_dpu_bmc_ips "${host}")
+
+        manifest="${inventory_dir}/${node_name}.yaml"
+        update_file_multi_replace \
+            "${MANIFESTS_DIR}/dpf-installation/zero-trust/dpunode.yaml" \
+            "${manifest}" \
+            "<DPU_NODE_NAME>" "${node_name}" \
+            "<DPU_DEVICES>" "${dpu_devices%$'\n'}" || return 1
+        log [INFO] "Creating DPUNode ${node_name} for WORKER_${host}"
+        apply_manifest "${manifest}" true || return 1
+    done < <(list_zero_trust_dpu_hosts)
+}
+
+function warn_unlisted_zero_trust_dpudevices() {
+    local host bmc_ip name
+    local -A listed_bmc_ips=()
+
+    while IFS= read -r host; do
+        while IFS= read -r bmc_ip; do
+            listed_bmc_ips["${bmc_ip}"]=1
+        done < <(list_zero_trust_host_dpu_bmc_ips "${host}")
+    done < <(list_zero_trust_dpu_hosts)
+
+    while IFS=' ' read -r name bmc_ip; do
+        [ -n "${name}" ] || continue
+        if [ -z "${bmc_ip}" ] || [ -z "${listed_bmc_ips[${bmc_ip}]+x}" ]; then
+            log [WARN] "DPUDevice ${name} (DPU BMC ${bmc_ip:-unknown}) is not listed in any WORKER_<N>_DPU_BMC_IPS and will not be provisioned"
         fi
-    done < <(list_dpu_serial_variables)
+    done < <(oc get dpudevices.provisioning.dpu.nvidia.com -n dpf-operator-system \
+        -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.bmcIp}{"\n"}{end}' || true)
 }
 
 function apply_zero_trust_dpunode_reboot_resources() {
     local inventory_dir="${GENERATED_DIR}/zero-trust-inventory"
     local reboot_script_manifest="${inventory_dir}/dpunode-reboot-script.yaml"
-    local serial_variable serial worker_index
+    local host node_name
     local bmc_ip_variable bmc_user_variable bmc_password_variable
-    local bmc_ip bmc_user bmc_password
     local host_bmc_address_map=""
     local host_bmc_credentials=""
 
-    while IFS= read -r serial_variable; do
-        serial="${!serial_variable:-}"
-        [ -n "${serial}" ] || continue
+    mkdir -p "${inventory_dir}"
+    while IFS= read -r host; do
+        node_name=$(zero_trust_dpu_node_name "${host}")
+        bmc_ip_variable="WORKER_${host}_BMC_IP"
+        bmc_user_variable="WORKER_${host}_BMC_USER"
+        bmc_password_variable="WORKER_${host}_BMC_PASSWORD"
 
-        worker_index="${serial_variable#DPU}"
-        worker_index="${worker_index%_SERIAL}"
-        bmc_ip_variable="WORKER_${worker_index}_BMC_IP"
-        bmc_user_variable="WORKER_${worker_index}_BMC_USER"
-        bmc_password_variable="WORKER_${worker_index}_BMC_PASSWORD"
-        bmc_ip="${!bmc_ip_variable}"
-        bmc_user="${!bmc_user_variable}"
-        bmc_password="${!bmc_password_variable}"
-
-        host_bmc_address_map+="    dpu-node-${serial}=${bmc_ip}"$'\n'
-        host_bmc_credentials+="  dpu-node-${serial}.username: $(printf '%s' "${bmc_user}" | base64 -w 0)"$'\n'
-        host_bmc_credentials+="  dpu-node-${serial}.password: $(printf '%s' "${bmc_password}" | base64 -w 0)"$'\n'
-    done < <(list_dpu_serial_variables)
+        host_bmc_address_map+="    ${node_name}=${!bmc_ip_variable}"$'\n'
+        host_bmc_credentials+="  ${node_name}.username: $(printf '%s' "${!bmc_user_variable}" | base64 -w 0)"$'\n'
+        host_bmc_credentials+="  ${node_name}.password: $(printf '%s' "${!bmc_password_variable}" | base64 -w 0)"$'\n'
+    done < <(list_zero_trust_dpu_hosts)
 
     update_file_multi_replace \
         "${MANIFESTS_DIR}/dpf-installation/zero-trust/dpunode-reboot-script.yaml" \
@@ -642,71 +668,15 @@ function apply_zero_trust_dpunode_reboot_resources() {
     apply_manifest "${reboot_script_manifest}" true
 }
 
-function configure_zero_trust_dpunode_reboot() {
-    local serial="$1"
-    local current_reboot_script
-
-    current_reboot_script=$(oc get -n dpf-operator-system \
-        "dpunode.provisioning.dpu.nvidia.com/dpu-node-${serial}" \
-        -o jsonpath='{.spec.nodeRebootMethod.script.name}' 2>/dev/null || true)
-    if [ "${current_reboot_script}" = "custom-reboot-script" ]; then
-        log [INFO] "Scripted reboot is already configured for dpu-node-${serial}"
-        return 0
-    fi
-
-    log [INFO] "Configuring scripted reboot for dpu-node-${serial}..."
-    if ! oc patch -n dpf-operator-system \
-        "dpunode.provisioning.dpu.nvidia.com/dpu-node-${serial}" \
-        --type=json \
-        -p '[{"op":"add","path":"/spec/nodeRebootMethod","value":{"script":{"name":"custom-reboot-script"}}}]'; then
-        log [ERROR] "Failed to configure scripted reboot for dpu-node-${serial}"
-        return 1
-    fi
-}
-
-function normalize_zero_trust_dpunode_label() {
-    local serial="$1"
-
-    if oc get -n dpf-operator-system \
-        "dpunode.provisioning.dpu.nvidia.com/dpu-node-${serial}" -o json | \
-        jq -e '.metadata.labels["feature.node.kubernetes.io/dpu-enabled"] == ""' \
-            >/dev/null; then
-        log [INFO] "DPUNode label is already normalized for dpu-node-${serial}"
-        return 0
-    fi
-
-    log [INFO] "Normalizing the discovered DPUNode label for dpu-node-${serial}..."
-    if ! oc label -n dpf-operator-system \
-        "dpunode.provisioning.dpu.nvidia.com/dpu-node-${serial}" \
-        feature.node.kubernetes.io/dpu-enabled= \
-        --overwrite; then
-        log [ERROR] "Failed to normalize the DPUNode label for dpu-node-${serial}"
-        return 1
-    fi
-}
-
-function configure_zero_trust_dpunodes() {
-    local serial_variable serial
-
-    while IFS= read -r serial_variable; do
-        serial="${!serial_variable:-}"
-        [ -n "${serial}" ] || continue
-
-        configure_zero_trust_dpunode_reboot "${serial}" || return 1
-        normalize_zero_trust_dpunode_label "${serial}" || return 1
-    done < <(list_dpu_serial_variables)
-}
-
 function configure_zero_trust_dpu_inventory() {
-    local apply_always="${1:-true}"
-
-    apply_zero_trust_dpu_inventory_resources "${apply_always}" || return 1
-    wait_for_zero_trust_dpu_inventory_resources || return 1
     apply_zero_trust_dpunode_reboot_resources || return 1
-    configure_zero_trust_dpunodes || return 1
+    apply_zero_trust_dpu_discovery || return 1
+    wait_for_zero_trust_dpudevices || return 1
+    apply_zero_trust_dpunodes || return 1
+    warn_unlisted_zero_trust_dpudevices
 
     log [INFO] "Zero Trust DPU inventory configuration completed"
-    oc get dpudevices.provisioning.dpu.nvidia.com -n dpf-operator-system
+    print_zero_trust_dpudevices
     oc get dpunodes.provisioning.dpu.nvidia.com -n dpf-operator-system
 }
 
@@ -718,20 +688,7 @@ function scale_out_zero_trust_dpus() {
 
     get_kubeconfig
     wait_for_dpf_provisioning_api
-    configure_zero_trust_dpu_inventory false
-}
-
-function zero_trust_serial_is_configured() {
-    local target_serial="$1"
-    local serial_variable
-
-    while IFS= read -r serial_variable; do
-        if [ "${!serial_variable:-}" = "${target_serial}" ]; then
-            return 0
-        fi
-    done < <(list_dpu_serial_variables)
-
-    return 1
+    configure_zero_trust_dpu_inventory
 }
 
 function zero_trust_dpu_for_node_absent() {
@@ -761,44 +718,37 @@ function wait_for_zero_trust_dpu_removal() {
     return 1
 }
 
-function scale_in_zero_trust_dpu() {
-    local serial="${1:-}"
+function scale_in_zero_trust_dpus() {
+    local node_name="${1:-}"
 
     if [ "${DPF_DEPLOYMENT_MODE}" != "zero-trust" ]; then
         log [ERROR] "DPU scale-in requires DPF_DEPLOYMENT_MODE=zero-trust"
         return 1
     fi
-    if [ "${ZT_DPU_DISCOVERY_MODE}" != "static" ]; then
-        log [ERROR] "DPU scale-in supports only ZT_DPU_DISCOVERY_MODE=static"
-        log [ERROR] "Scanning mode uses one inclusive IP range and would rediscover the removed DPU"
+    if [ -z "${node_name}" ]; then
+        log [ERROR] "DPU scale-in requires DPU_NODE, for example: make scale-in-zt-dpus DPU_NODE=dpu-node-worker-2"
         return 1
     fi
-    if [ -z "${serial}" ]; then
-        log [ERROR] "DPU scale-in requires DPU_SERIAL, for example: make scale-in-zt-dpu DPU_SERIAL=mt2536600emj"
+    if [[ ! "${node_name}" =~ ^dpu-node-worker-([1-9][0-9]*)$ ]]; then
+        log [ERROR] "DPU_NODE must be a DPUNode created by this automation, dpu-node-worker-<N>: ${node_name}"
         return 1
     fi
-    if [[ ! "${serial}" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
-        log [ERROR] "DPU_SERIAL must be a lowercase Kubernetes resource name: ${serial}"
-        return 1
-    fi
-    if zero_trust_serial_is_configured "${serial}"; then
-        log [ERROR] "DPU ${serial} is still present in the configured DPU<N>_SERIAL inventory"
-        log [ERROR] "Remove it from the desired inventory, regenerate .env, and rerun scale-in"
-        return 1
-    fi
+    local host="${BASH_REMATCH[1]}"
 
     get_kubeconfig
     wait_for_dpf_provisioning_api
 
-    local node_name
-    node_name=$(oc get dpudevices.provisioning.dpu.nvidia.com "${serial}" \
-        -n dpf-operator-system \
-        -o 'jsonpath={.metadata.labels.provisioning\.dpu\.nvidia\.com/dpunode-name}' \
-        2>/dev/null || true)
-    node_name="${node_name:-dpu-node-${serial}}"
-
+    local desired current
+    desired=$(list_zero_trust_host_dpu_bmc_ips "${host}" | sort)
     if oc get dpunodes.provisioning.dpu.nvidia.com "${node_name}" \
         -n dpf-operator-system &>/dev/null; then
+        current=$(zero_trust_dpunode_bmc_ips "${node_name}") || return 1
+        if [ -n "${desired}" ] && [ "${current}" = "${desired}" ]; then
+            log [ERROR] "DPUNode ${node_name} still matches WORKER_${host}_DPU_BMC_IPS"
+            log [ERROR] "Remove or change WORKER_${host}_DPU_BMC_IPS, regenerate .env, and rerun scale-in"
+            return 1
+        fi
+
         log [INFO] "Removing ${node_name} from the Zero Trust DPUDeployment selector"
         oc label dpunodes.provisioning.dpu.nvidia.com "${node_name}" \
             -n dpf-operator-system \
@@ -814,13 +764,19 @@ function scale_in_zero_trust_dpu() {
         log [INFO] "DPUNode ${node_name} is already absent"
     fi
 
-    log [INFO] "Deleting DPUDevice ${serial}"
-    oc delete dpudevices.provisioning.dpu.nvidia.com "${serial}" \
+    # An attached DPUDevice keeps its DPUNode label after the DPUNode is gone.
+    # Deleting it lets discovery recreate it unattached.
+    log [INFO] "Deleting the DPUDevices attached to ${node_name}"
+    oc delete dpudevices.provisioning.dpu.nvidia.com \
         -n dpf-operator-system \
+        -l "provisioning.dpu.nvidia.com/dpunode-name=${node_name}" \
         --ignore-not-found \
         --timeout=10m
 
-    log [INFO] "Zero Trust DPU ${serial} scale-in completed"
+    if [ -n "${desired}" ]; then
+        log [INFO] "WORKER_${host}_DPU_BMC_IPS still lists DPUs; run 'make scale-out-zt-dpus' to recreate ${node_name}"
+    fi
+    log [INFO] "Zero Trust ${node_name} scale-in completed"
 }
 
 function deploy_argocd() {
@@ -1165,8 +1121,8 @@ function main() {
             scale-out-zero-trust-dpus)
                 scale_out_zero_trust_dpus
                 ;;
-            scale-in-zero-trust-dpu)
-                scale_in_zero_trust_dpu "$@"
+            scale-in-zero-trust-dpus)
+                scale_in_zero_trust_dpus "$@"
                 ;;
             deploy-hypershift)
                 deploy_hypershift
@@ -1188,7 +1144,7 @@ function main() {
                 ;;
             *)
                 log [INFO] "Unknown command: $command"
-                log [INFO] "Available commands: deploy-nfd, deploy-metallb, deploy-argocd, deploy-maintenance-operator, apply-dpf, scale-out-zero-trust-dpus, scale-in-zero-trust-dpu, deploy-hypershift, deploy-dpfhcp, deploy-hosted-cluster, deploy-dpf-hcp-provisioner-operator, delete-dpf-hcp-provisioner-operator, create-dpfhcpprovisioner-secrets, create-dpfhcpprovisioner-cr"
+                log [INFO] "Available commands: deploy-nfd, deploy-metallb, deploy-argocd, deploy-maintenance-operator, apply-dpf, scale-out-zero-trust-dpus, scale-in-zero-trust-dpus, deploy-hypershift, deploy-dpfhcp, deploy-hosted-cluster, deploy-dpf-hcp-provisioner-operator, delete-dpf-hcp-provisioner-operator, create-dpfhcpprovisioner-secrets, create-dpfhcpprovisioner-cr"
                 exit 1
                 ;;
         esac

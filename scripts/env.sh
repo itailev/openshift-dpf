@@ -165,20 +165,19 @@ _do_generate_env() {
         envsubst < "$template_file" > "$output_file"
 
         if [ "${DPF_DEPLOYMENT_MODE:-}" = "zero-trust" ]; then
-            # DPU1 and DPU2 are rendered by env.template; append higher-numbered DPUs.
-            local serial_variable bmc_ip_variable
-            while IFS= read -r serial_variable; do
-                if ! grep -q "^${serial_variable}=" "$output_file"; then
-                    printf '%s=%s\n' "${serial_variable}" "${!serial_variable}" >> "$output_file"
-                fi
-                if [ "${ZT_DPU_DISCOVERY_MODE}" = "static" ]; then
-                    bmc_ip_variable="${serial_variable%_SERIAL}_BMC_IP"
-                    if declare -p "${bmc_ip_variable}" &>/dev/null &&
-                       ! grep -q "^${bmc_ip_variable}=" "$output_file"; then
-                        printf '%s=%s\n' "${bmc_ip_variable}" "${!bmc_ip_variable}" >> "$output_file"
+            # Workers 1 and 2 are rendered by env.template; append higher-numbered hosts.
+            local host variable
+            while IFS= read -r host; do
+                for variable in \
+                    "WORKER_${host}_DPU_BMC_IPS" \
+                    "WORKER_${host}_BMC_IP" \
+                    "WORKER_${host}_BMC_USER" \
+                    "WORKER_${host}_BMC_PASSWORD"; do
+                    if ! grep -q "^${variable}=" "$output_file"; then
+                        printf '%s=%s\n' "${variable}" "${!variable:-}" >> "$output_file"
                     fi
-                fi
-            done < <(list_dpu_serial_variables)
+                done
+            done < <(list_zero_trust_dpu_hosts)
         fi
     )
 }
@@ -263,123 +262,121 @@ resolve_dpf_storage_class() {
     fi
 }
 
-# Print DPU1_SERIAL, DPU2_SERIAL, DPU3_SERIAL, ... in numeric order. Additional
-# numbered variables can be supplied through .env, the process environment, or
-# the make command line without changing the deployment scripts.
-list_dpu_serial_variables() {
-    compgen -A variable | grep -E '^DPU[1-9][0-9]*_SERIAL$' | sort -V || true
-}
-
-list_dpu_bmc_ip_variables() {
-    compgen -A variable | grep -E '^DPU[1-9][0-9]*_BMC_IP$' | sort -V || true
-}
-
-validate_zero_trust_dpu_serials() {
-    local invalid=0
-    local variable serial
-    local -A seen_serials=()
-
-    if [ -z "${DPU1_SERIAL:-}" ]; then
-        echo "ERROR: Zero Trust installation requires DPU1_SERIAL" >&2
-        invalid=1
-    fi
-
+# Print the indexes of the hosts whose WORKER_<N>_DPU_BMC_IPS lists at least one
+# DPU, in numeric order. Additional numbered variables can be supplied through
+# .env, the process environment, or the make command line.
+list_zero_trust_dpu_hosts() {
+    local variable index
     while IFS= read -r variable; do
-        serial="${!variable:-}"
-        [ -n "${serial}" ] || continue
-
-        if [[ "${serial}" =~ [[:upper:]] ]]; then
-            echo "ERROR: ${variable} must be lowercase" >&2
-            invalid=1
-        fi
-        if [ -n "${seen_serials[${serial}]+x}" ]; then
-            echo "ERROR: ${variable} duplicates another DPU serial: ${serial}" >&2
-            invalid=1
-        else
-            seen_serials["${serial}"]=1
-        fi
-    done < <(list_dpu_serial_variables)
-
-    [ "${invalid}" -eq 0 ]
+        [ -n "${!variable//[[:space:],]/}" ] || continue
+        index="${variable#WORKER_}"
+        echo "${index%_DPU_BMC_IPS}"
+    done < <(compgen -A variable | grep -E '^WORKER_[1-9][0-9]*_DPU_BMC_IPS$' | sort -V || true)
 }
 
-validate_zero_trust_dpu_bmc_addresses() {
+# Print the DPU BMC IPs listed for host <N>, one per line, in the listed order.
+list_zero_trust_host_dpu_bmc_ips() {
+    local variable="WORKER_$1_DPU_BMC_IPS"
+    local ip
+    local -a ips=()
+
+    IFS=',' read -r -a ips <<< "${!variable:-}"
+    for ip in "${ips[@]}"; do
+        ip="${ip//[[:space:]]/}"
+        if [ -n "${ip}" ]; then
+            echo "${ip}"
+        fi
+    done
+}
+
+zero_trust_dpu_node_name() {
+    echo "dpu-node-worker-$1"
+}
+
+validate_zero_trust_dpu_inventory() {
     local invalid=0
-    local serial_variable serial bmc_ip_variable bmc_ip
+    local variable host ip ip_value start_value end_value dpu_variable
+    local -a hosts=()
     local -A seen_bmc_ips=()
 
-    while IFS= read -r serial_variable; do
-        serial="${!serial_variable:-}"
-        [ -n "${serial}" ] || continue
+    if [ -n "${ZT_DPU_DISCOVERY_MODE:-}" ]; then
+        echo "ERROR: ZT_DPU_DISCOVERY_MODE is no longer supported; DPUDiscovery always scans ZT_DPU_BMC_IP_RANGE_START-ZT_DPU_BMC_IP_RANGE_END" >&2
+        invalid=1
+    fi
+    while IFS= read -r variable; do
+        [ -n "${!variable:-}" ] || continue
+        echo "ERROR: ${variable} is no longer supported; list each host's DPU BMC IPs in WORKER_<N>_DPU_BMC_IPS" >&2
+        invalid=1
+    done < <(compgen -A variable | grep -E '^DPU[1-9][0-9]*_(SERIAL|BMC_IP)$' | sort -V || true)
 
-        bmc_ip_variable="${serial_variable%_SERIAL}_BMC_IP"
-        bmc_ip="${!bmc_ip_variable:-}"
-        if [ -z "${bmc_ip}" ]; then
-            echo "ERROR: Static Zero Trust inventory requires ${bmc_ip_variable} for ${serial_variable}" >&2
+    if [ -z "${ZT_DPU_BMC_IP_RANGE_START:-}" ] ||
+       [ -z "${ZT_DPU_BMC_IP_RANGE_END:-}" ]; then
+        echo "ERROR: Zero Trust installation requires ZT_DPU_BMC_IP_RANGE_START and ZT_DPU_BMC_IP_RANGE_END" >&2
+        return 1
+    fi
+    if ! start_value=$(_ipv4_to_integer "${ZT_DPU_BMC_IP_RANGE_START}") ||
+       ! end_value=$(_ipv4_to_integer "${ZT_DPU_BMC_IP_RANGE_END}") ||
+       [ "${start_value}" -gt "${end_value}" ]; then
+        echo "ERROR: Invalid Zero Trust DPU BMC IP range: ${ZT_DPU_BMC_IP_RANGE_START}-${ZT_DPU_BMC_IP_RANGE_END}" >&2
+        return 1
+    fi
+
+    mapfile -t hosts < <(list_zero_trust_dpu_hosts)
+    if [ "${#hosts[@]}" -eq 0 ]; then
+        echo "ERROR: Zero Trust installation requires WORKER_<N>_DPU_BMC_IPS for at least one host, for example WORKER_1_DPU_BMC_IPS=10.6.136.33" >&2
+        return 1
+    fi
+
+    for host in "${hosts[@]}"; do
+        if [ "${host}" -gt "${WORKER_COUNT}" ]; then
+            echo "ERROR: WORKER_${host}_DPU_BMC_IPS requires WORKER_${host}, but WORKER_COUNT=${WORKER_COUNT}" >&2
             invalid=1
             continue
         fi
-        if ! _ipv4_to_integer "${bmc_ip}" >/dev/null; then
-            echo "ERROR: ${bmc_ip_variable} must be a valid IPv4 address" >&2
+        if [ "${host}" -gt 5 ]; then
+            echo "ERROR: WORKER_${host}_DPU_BMC_IPS: the Zero Trust HBN values (VLANs 10+N and 20+N, BGP AS 65001+N*100) support hosts 1-5" >&2
             invalid=1
-        elif [ -n "${seen_bmc_ips[${bmc_ip}]+x}" ]; then
-            echo "ERROR: ${bmc_ip_variable} duplicates another DPU BMC IP: ${bmc_ip}" >&2
-            invalid=1
-        else
-            seen_bmc_ips["${bmc_ip}"]=1
-        fi
-    done < <(list_dpu_serial_variables)
-
-    while IFS= read -r bmc_ip_variable; do
-        bmc_ip="${!bmc_ip_variable:-}"
-        [ -n "${bmc_ip}" ] || continue
-        serial_variable="${bmc_ip_variable%_BMC_IP}_SERIAL"
-        if [ -z "${!serial_variable:-}" ]; then
-            echo "ERROR: ${bmc_ip_variable} requires ${serial_variable}" >&2
-            invalid=1
-        fi
-    done < <(list_dpu_bmc_ip_variables)
-
-    [ "${invalid}" -eq 0 ]
-}
-
-validate_zero_trust_host_bmc_credentials() {
-    local serial_variable serial worker_index dpu_variable
-    local bmc_ip_variable
-
-    while IFS= read -r serial_variable; do
-        serial="${!serial_variable:-}"
-        [ -n "${serial}" ] || continue
-
-        worker_index="${serial_variable#DPU}"
-        worker_index="${worker_index%_SERIAL}"
-        if [ "${worker_index}" -gt "${WORKER_COUNT}" ]; then
-            echo "ERROR: ${serial_variable} requires WORKER_${worker_index}, but WORKER_COUNT=${WORKER_COUNT}" >&2
-            return 1
+            continue
         fi
 
-        dpu_variable="WORKER_${worker_index}_DPU"
+        dpu_variable="WORKER_${host}_DPU"
         if [ "${!dpu_variable:-$(default_worker_is_dpu)}" != "true" ]; then
-            echo "ERROR: ${serial_variable} requires ${dpu_variable}=true for host reboot mapping" >&2
-            return 1
+            echo "ERROR: WORKER_${host}_DPU_BMC_IPS requires ${dpu_variable}=true" >&2
+            invalid=1
         fi
 
-        for bmc_ip_variable in \
-            "WORKER_${worker_index}_BMC_IP" \
-            "WORKER_${worker_index}_BMC_USER" \
-            "WORKER_${worker_index}_BMC_PASSWORD"; do
-            if [ -z "${!bmc_ip_variable:-}" ]; then
-                echo "ERROR: ${serial_variable} requires ${bmc_ip_variable} for host reboot handling" >&2
-                return 1
+        for variable in \
+            "WORKER_${host}_BMC_IP" \
+            "WORKER_${host}_BMC_USER" \
+            "WORKER_${host}_BMC_PASSWORD"; do
+            if [ -z "${!variable:-}" ]; then
+                echo "ERROR: WORKER_${host}_DPU_BMC_IPS requires ${variable} for host reboot handling" >&2
+                invalid=1
             fi
         done
-
-        bmc_ip_variable="WORKER_${worker_index}_BMC_IP"
-        if ! _ipv4_to_integer "${!bmc_ip_variable}" >/dev/null; then
-            echo "ERROR: ${bmc_ip_variable} must be a valid IPv4 address" >&2
-            return 1
+        variable="WORKER_${host}_BMC_IP"
+        if [ -n "${!variable:-}" ] && ! _ipv4_to_integer "${!variable}" >/dev/null; then
+            echo "ERROR: ${variable} must be a valid IPv4 address" >&2
+            invalid=1
         fi
-    done < <(list_dpu_serial_variables)
+
+        while IFS= read -r ip; do
+            if ! ip_value=$(_ipv4_to_integer "${ip}"); then
+                echo "ERROR: WORKER_${host}_DPU_BMC_IPS contains an invalid IPv4 address: ${ip}" >&2
+                invalid=1
+            elif [ "${ip_value}" -lt "${start_value}" ] || [ "${ip_value}" -gt "${end_value}" ]; then
+                echo "ERROR: WORKER_${host}_DPU_BMC_IPS address ${ip} is outside ZT_DPU_BMC_IP_RANGE_START-ZT_DPU_BMC_IP_RANGE_END (${ZT_DPU_BMC_IP_RANGE_START}-${ZT_DPU_BMC_IP_RANGE_END})" >&2
+                invalid=1
+            elif [ -n "${seen_bmc_ips[${ip}]+x}" ]; then
+                echo "ERROR: DPU BMC IP ${ip} is listed for both WORKER_${seen_bmc_ips[${ip}]} and WORKER_${host}" >&2
+                invalid=1
+            else
+                seen_bmc_ips["${ip}"]="${host}"
+            fi
+        done < <(list_zero_trust_host_dpu_bmc_ips "${host}")
+    done
+
+    [ "${invalid}" -eq 0 ]
 }
 
 _ipv4_to_integer() {
@@ -408,42 +405,13 @@ validate_worker_power_on_delay() {
 validate_zero_trust_redfish_configuration() {
     [ "${DPF_DEPLOYMENT_MODE:-host-trusted}" = "zero-trust" ] || return 0
 
-    case "${ZT_DPU_DISCOVERY_MODE}" in
-        scanning|static)
-            ;;
-        *)
-            echo "ERROR: ZT_DPU_DISCOVERY_MODE must be 'scanning' or 'static'" >&2
-            return 1
-            ;;
-    esac
-
     if [ -z "${ZT_DPU_BMC_ROOT_PASSWORD:-}" ]; then
         echo "ERROR: Zero Trust installation requires ZT_DPU_BMC_ROOT_PASSWORD" >&2
         return 1
     fi
 
     validate_worker_power_on_delay || return 1
-    validate_zero_trust_dpu_serials || return 1
-    validate_zero_trust_host_bmc_credentials || return 1
-
-    if [ "${ZT_DPU_DISCOVERY_MODE}" = "static" ]; then
-        validate_zero_trust_dpu_bmc_addresses || return 1
-        return 0
-    fi
-
-    if [ -z "${ZT_DPU_BMC_IP_RANGE_START:-}" ] ||
-       [ -z "${ZT_DPU_BMC_IP_RANGE_END:-}" ]; then
-        echo "ERROR: Scanning Zero Trust inventory requires ZT_DPU_BMC_IP_RANGE_START and ZT_DPU_BMC_IP_RANGE_END" >&2
-        return 1
-    fi
-
-    local start_value end_value
-    if ! start_value=$(_ipv4_to_integer "${ZT_DPU_BMC_IP_RANGE_START}") ||
-       ! end_value=$(_ipv4_to_integer "${ZT_DPU_BMC_IP_RANGE_END}") ||
-       [ "${start_value}" -gt "${end_value}" ]; then
-        echo "ERROR: Invalid Zero Trust DPU BMC IP range: ${ZT_DPU_BMC_IP_RANGE_START}-${ZT_DPU_BMC_IP_RANGE_END}" >&2
-        return 1
-    fi
+    validate_zero_trust_dpu_inventory || return 1
 }
 
 validate_zero_trust_mode() {
@@ -472,9 +440,8 @@ validate_zero_trust_mode() {
             return 1
         fi
     done
-    if [ "${ZT_DPU_DISCOVERY_MODE}" = "scanning" ] &&
-       [ -z "${ZT_DPU_DISCOVERY_NAME:-}" ]; then
-        echo "ERROR: Scanning Zero Trust inventory requires ZT_DPU_DISCOVERY_NAME" >&2
+    if [ -z "${ZT_DPU_DISCOVERY_NAME:-}" ]; then
+        echo "ERROR: Zero Trust installation requires ZT_DPU_DISCOVERY_NAME" >&2
         return 1
     fi
     if [ "${VM_COUNT}" -gt 1 ] && [ -z "${HYPERSHIFT_API_IP:-}" ]; then
@@ -660,8 +627,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         generate-env-test)
             generate_env_test "${2:-false}"
             ;;
-        validate-zt-serials)
-            validate_zero_trust_dpu_serials
+        validate-zt-inventory)
+            validate_zero_trust_dpu_inventory
             ;;
         validate-zt-mode)
             validate_zero_trust_mode
@@ -671,7 +638,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             ;;
         *)
             echo "ERROR: Unknown command: $command"
-            echo "Available commands: validate-env-files, generate-env, validate-env-test-files, generate-env-test, validate-zt-serials, validate-zt-mode, validate-host-trusted-mode"
+            echo "Available commands: validate-env-files, generate-env, validate-env-test-files, generate-env-test, validate-zt-inventory, validate-zt-mode, validate-host-trusted-mode"
             exit 1
             ;;
     esac

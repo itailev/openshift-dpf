@@ -35,6 +35,6 @@ spec:
         bfbRegistryAddress: "<BFB_REGISTRY_HOST>:<ZT_BFB_REGISTRY_PORT>"
         bfbRegistry:
           port: <ZT_BFB_REGISTRY_PORT>
-        skipDPUNodeDiscovery: <SKIP_DPU_NODE_DISCOVERY>
+        skipDPUNodeDiscovery: true
   staticClusterManager:
     disable: false

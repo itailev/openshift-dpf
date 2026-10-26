@@ -91,6 +91,22 @@ function wait_for_resource() {
     return 1
 }
 
+# Print the name of the single DPUDevice whose spec.bmcIp is <ip>. Fails when
+# discovery has not created it yet or more than one DPUDevice uses the address.
+function zero_trust_dpudevice_name() {
+    local bmc_ip="$1"
+    local names
+
+    names=$(oc get dpudevices.provisioning.dpu.nvidia.com -n dpf-operator-system -o json | \
+        jq -r --arg ip "${bmc_ip}" '.items[] | select(.spec.bmcIp == $ip) | .metadata.name') || return 1
+    [ -n "${names}" ] && [ "$(wc -l <<< "${names}")" -eq 1 ] || return 1
+    echo "${names}"
+}
+
+function zero_trust_dpudevice_exists() {
+    zero_trust_dpudevice_name "$1" >/dev/null
+}
+
 function wait_for_secret_with_data() {
     local namespace=$1
     local secret_name=$2

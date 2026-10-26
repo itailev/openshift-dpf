@@ -58,51 +58,41 @@ Complete these manual steps on every DPU BMC before running `make all-zt`:
    curl -k -u root https://<DPU_BMC_IP>/redfish/v1/Systems/Bluefield
    ```
 
-4. Provide a numbered serial variable for every DPU: `DPU1_SERIAL`,
-   `DPU2_SERIAL`, `DPU3_SERIAL`, and so on. Every serial value must be
-   lowercase.
+4. Set `ZT_DPU_BMC_IP_RANGE_START` and `ZT_DPU_BMC_IP_RANGE_END`. A
+   `DPUDiscovery` scans this inclusive range and creates a `DPUDevice` for
+   every DPU BMC it finds. Scans repeat every three minutes by default;
+   override this with `ZT_DPU_DISCOVERY_SCAN_INTERVAL`. Only one range is
+   supported. The DPU addresses may have gaps within it; every address in the
+   range is scanned.
+5. List the DPU BMC IPs of every host in `WORKER_<N>_DPU_BMC_IPS`,
+   comma-separated without spaces, for example
+   `WORKER_1_DPU_BMC_IPS=10.6.136.33` or
+   `WORKER_2_DPU_BMC_IPS=10.6.136.34,10.6.136.35` for a host with two DPUs.
+   Every address must be inside the discovery range, and each host with DPUs
+   needs `WORKER_<N>_DPU=true` and its `WORKER_<N>_BMC_*` values. Hosts 1-5
+   are supported, since the HBN VLANs and BGP AS numbers are derived from
+   `N`. DPU serials are not required: discovery reads them from the DPU BMC.
 
-   To retrieve a DPU serial number in lowercase, run:
-
-   ```bash
-   curl -k -u root:'BMC root password' https://<DPU_BMC_IP>/redfish/v1/Systems/Bluefield | jq -r '.SerialNumber | ascii_downcase'
-   ```
-
-5. Select the DPU inventory mode with `ZT_DPU_DISCOVERY_MODE`:
-
-   - `scanning` (default): set `ZT_DPU_BMC_IP_RANGE_START` and
-     `ZT_DPU_BMC_IP_RANGE_END`. A `DPUDiscovery` scans the range and creates
-     the `DPUDevice` and `DPUNode` resources. Numbered `DPU<N>_BMC_IP`
-     variables are not required. Scans repeat every three minutes by default;
-     override this with `ZT_DPU_DISCOVERY_SCAN_INTERVAL`. Only one inclusive
-     IP range is supported; space- or comma-separated IP lists and multiple
-     ranges are not. The DPU addresses may have gaps within that range—for
-     example, a range from `192.168.1.3` through `192.168.1.8` can contain DPUs
-     at `.3`, `.6`, and `.8`, but every address in the range is scanned.
-   - `static`: pair every serial with its BMC address, for example
-     `DPU1_SERIAL=mt2437600n0p` and `DPU1_BMC_IP=10.6.136.33`. The automation
-     creates a dedicated `DPUDevice` and `DPUNode` for every numbered pair.
-     The lowercase serial is used for Kubernetes resource names and converted
-     to uppercase for `DPUDevice.spec.serialNumber`. The BMC IP range variables
-     are not required.
+Discovery does not create `DPUNode` resources (`skipDPUNodeDiscovery: true`).
+The automation creates one `DPUNode` per host, `dpu-node-worker-<N>`, that
+lists the `DPUDevice` discovered at each of the host's DPU BMC IPs. The DPUs
+are named `dpu-node-worker-<N>-<serial>`. A discovered `DPUDevice` whose
+address is not listed for any host is reported and is not provisioned.
 
 Zero Trust DPU nodes use a `custom-reboot-script` ConfigMap based on NVIDIA's
 example. The controller creates `<dpunode-name>-script-job` when reboot handling
 is needed. The Job uses `ZT_DPU_REBOOT_IMAGE`, a small image containing Bash and
 `ipmitool`, and performs the requested reset or power cycle through the matching
-physical host BMC.
-Numbered DPUs and workers are paired by suffix: `DPU1_SERIAL` uses the
-`WORKER_1_BMC_*` values, `DPU2_SERIAL` uses `WORKER_2_BMC_*`, and so on.
+physical host BMC: `dpu-node-worker-<N>` uses the `WORKER_<N>_BMC_*` values.
 `PowerCycle` uses `chassis power cycle`; the warm-reset methods use
 `chassis power reset`; and `NoAction` exits without contacting the BMC.
 
 ### Scaling Out Zero Trust DPUs
 
-Add the new numbered `DPU<N>_SERIAL` variables to the inputs used to generate
-`.env`. In static discovery mode, also add each matching `DPU<N>_BMC_IP`.
-Ensure `WORKER_COUNT` includes every physical worker associated with the
-configured DPUs and configure its numbered `WORKER_<N>_BMC_*` variables.
-Regenerate `.env`, then run:
+Add `WORKER_<N>_DPU_BMC_IPS` for each new host to the inputs used to generate
+`.env`. Ensure `WORKER_COUNT` includes every physical worker with DPUs and
+configure its numbered `WORKER_<N>_BMC_*` variables. Regenerate `.env`, then
+run:
 
 ```bash
 source user.env
@@ -111,32 +101,35 @@ make scale-out-zt-dpus
 ```
 
 The target checks every configured physical worker and powers on only those that
-are off. It then waits for every configured DPU Redfish endpoint, refreshes the
-HBN per-DPU configuration, and creates missing DPU inventory objects. Existing
+are off. It then waits for every configured DPU Redfish endpoint, waits for
+discovery to create their `DPUDevice` resources, creates the missing host
+`DPUNode` resources, and refreshes the HBN per-DPU configuration. Existing
 IPAM, NAD, interface, and service-chain resources automatically reconcile for
-the new DPUs.
+the new DPUs. An existing `DPUNode` is not changed: to change the DPUs of a host
+that is already deployed, scale it in first.
 
-### Scaling In a Zero Trust DPU
+### Scaling In Zero Trust DPUs
 
-Scale-in is supported only with `ZT_DPU_DISCOVERY_MODE=static`. Scanning mode
-uses one inclusive IP range and would rediscover a removed DPU whose address
-remains within that range.
-
-Clear the removed DPU's numbered `DPU<N>_SERIAL` and matching
-`DPU<N>_BMC_IP` from the inputs used to generate `.env`. At least `DPU1_SERIAL`
-must remain configured. Regenerate `.env`, then pass the removed serial
-explicitly:
+Scale-in works per host. Clear or change the host's `WORKER_<N>_DPU_BMC_IPS` in
+the inputs used to generate `.env`, regenerate `.env`, then pass the host's
+`DPUNode` explicitly. At least one host must keep its DPUs listed:
 
 ```bash
 source user.env
 make generate-env FORCE=true
-make scale-in-zt-dpu DPU_SERIAL=mt2536600emj
+make scale-in-zt-dpus DPU_NODE=dpu-node-worker-2
 ```
 
-The target removes the DPUNode from the DPUDeployment selector, waits for the
-managed DPU to be deleted, removes its DPUNode and DPUDevice inventory objects,
-and refreshes the HBN configuration for the remaining DPUs. It does not power
-off the physical worker.
+The target removes the `DPUNode` from the DPUDeployment selector, waits for its
+DPUs to be deleted, removes the `DPUNode` and its `DPUDevice` resources, and
+refreshes the HBN configuration. Discovery recreates the `DPUDevice` of a DPU
+whose address stays in the range within `ZT_DPU_DISCOVERY_SCAN_INTERVAL`, but
+nothing provisions it while no host lists it. To take a DPU out of DPF
+completely, for example to decommission it or to work on its BMC, move its BMC
+IP outside `ZT_DPU_BMC_IP_RANGE_START`-`ZT_DPU_BMC_IP_RANGE_END`. To remove one
+DPU from a host with several, list the remaining addresses,
+run scale-in, then run `make scale-out-zt-dpus`; the remaining DPUs are
+provisioned again. The target does not power off the physical worker.
 
 ### Zero Trust Single-Node OpenShift
 

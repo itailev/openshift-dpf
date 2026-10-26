@@ -1,13 +1,13 @@
 apiVersion: provisioning.dpu.nvidia.com/v1alpha1
 kind: DPUNode
 metadata:
-  name: dpu-node-<DPU_SERIAL>
+  name: <DPU_NODE_NAME>
   namespace: dpf-operator-system
   labels:
     feature.node.kubernetes.io/dpu-enabled: ""
 spec:
   dpus:
-    - name: <DPU_SERIAL>
+<DPU_DEVICES>
   nodeRebootMethod:
     script:
       name: custom-reboot-script
