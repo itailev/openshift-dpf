@@ -215,13 +215,9 @@ resolve_zero_trust_bfb_registry_host() {
 prepare_zero_trust_objects() {
     local flannel_config="$1"
     local bfb_registry_host
-    local skip_dpu_node_discovery=false
     local inventory_dir="${GENERATED_DIR}/zero-trust-inventory"
 
     resolve_zero_trust_bfb_registry_host bfb_registry_host || return 1
-    if [ "${ZT_DPU_DISCOVERY_MODE}" = "static" ]; then
-        skip_dpu_node_discovery=true
-    fi
 
     update_file_multi_replace \
         "$MANIFESTS_DIR/dpf-installation/zero-trust/dpfoperatorconfig.yaml" \
@@ -230,8 +226,7 @@ prepare_zero_trust_objects() {
         "<FLANNEL_CONFIG>" "$flannel_config" \
         "<NODES_MTU>" "$NODES_MTU" \
         "<BFB_REGISTRY_HOST>" "$bfb_registry_host" \
-        "<ZT_BFB_REGISTRY_PORT>" "$ZT_BFB_REGISTRY_PORT" \
-        "<SKIP_DPU_NODE_DISCOVERY>" "$skip_dpu_node_discovery"
+        "<ZT_BFB_REGISTRY_PORT>" "$ZT_BFB_REGISTRY_PORT"
 
     update_file_multi_replace \
         "$MANIFESTS_DIR/dpf-installation/zero-trust/bmc-shared-password.yaml" \
@@ -241,35 +236,15 @@ prepare_zero_trust_objects() {
     mkdir -p "${inventory_dir}"
     find "${inventory_dir}" -maxdepth 1 -type f -name "*.yaml" -delete
 
-    if [ "${ZT_DPU_DISCOVERY_MODE}" = "scanning" ]; then
-        update_file_multi_replace \
-            "$MANIFESTS_DIR/dpf-installation/zero-trust/dpudiscovery.yaml" \
-            "${inventory_dir}/dpudiscovery.yaml" \
-            "<ZT_DPU_DISCOVERY_NAME>" "$ZT_DPU_DISCOVERY_NAME" \
-            "<ZT_DPU_DISCOVERY_SCAN_INTERVAL>" "${ZT_DPU_DISCOVERY_SCAN_INTERVAL:-3m}" \
-            "<ZT_DPU_BMC_IP_RANGE_START>" "$ZT_DPU_BMC_IP_RANGE_START" \
-            "<ZT_DPU_BMC_IP_RANGE_END>" "$ZT_DPU_BMC_IP_RANGE_END"
-        return
-    fi
-
-    local serial_variable serial hardware_serial bmc_ip_variable
-    while IFS= read -r serial_variable; do
-        serial="${!serial_variable:-}"
-        [ -n "${serial}" ] || continue
-        hardware_serial="${serial^^}"
-        bmc_ip_variable="${serial_variable%_SERIAL}_BMC_IP"
-
-        update_file_multi_replace \
-            "$MANIFESTS_DIR/dpf-installation/zero-trust/dpudevice.yaml" \
-            "${inventory_dir}/dpudevice-${serial}.yaml" \
-            "<DPU_DEVICE_NAME>" "${serial}" \
-            "<DPU_SERIAL_NUMBER>" "${hardware_serial}" \
-            "<DPU_BMC_IP>" "${!bmc_ip_variable}"
-        update_file_multi_replace \
-            "$MANIFESTS_DIR/dpf-installation/zero-trust/dpunode.yaml" \
-            "${inventory_dir}/dpunode-${serial}.yaml" \
-            "<DPU_SERIAL>" "${serial}"
-    done < <(list_dpu_serial_variables)
+    # DPUNodes list DPUDevice names, which discovery derives from the DPU
+    # serials, so dpf.sh renders them after discovery.
+    update_file_multi_replace \
+        "$MANIFESTS_DIR/dpf-installation/zero-trust/dpudiscovery.yaml" \
+        "${inventory_dir}/dpudiscovery.yaml" \
+        "<ZT_DPU_DISCOVERY_NAME>" "$ZT_DPU_DISCOVERY_NAME" \
+        "<ZT_DPU_DISCOVERY_SCAN_INTERVAL>" "${ZT_DPU_DISCOVERY_SCAN_INTERVAL:-3m}" \
+        "<ZT_DPU_BMC_IP_RANGE_START>" "$ZT_DPU_BMC_IP_RANGE_START" \
+        "<ZT_DPU_BMC_IP_RANGE_END>" "$ZT_DPU_BMC_IP_RANGE_END"
 }
 
 prepare_dpf_manifests() {

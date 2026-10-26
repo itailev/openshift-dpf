@@ -314,15 +314,6 @@ EOF
     retry 5 10 apply_manifest "${WORKER_GENERATED_DIR}/${name}-network-data.yaml" true
 }
 
-_integer_to_ipv4() {
-    local value="$1"
-    printf '%d.%d.%d.%d\n' \
-        "$(( (value >> 24) & 255 ))" \
-        "$(( (value >> 16) & 255 ))" \
-        "$(( (value >> 8) & 255 ))" \
-        "$(( value & 255 ))"
-}
-
 _dpu_redfish_ready() {
     local ip="$1"
     local curl_config="$2"
@@ -342,14 +333,14 @@ wait_for_zero_trust_dpu_redfish() {
         return 0
     fi
 
-    local expected=0 serial_variable
-    while IFS= read -r serial_variable; do
-        if [ -n "${!serial_variable:-}" ]; then
-            expected=$((expected + 1))
-        fi
-    done < <(list_dpu_serial_variables)
+    local -a bmc_ips=()
+    local host
+    while IFS= read -r host; do
+        mapfile -t -O "${#bmc_ips[@]}" bmc_ips < <(list_zero_trust_host_dpu_bmc_ips "${host}")
+    done < <(list_zero_trust_dpu_hosts)
+    local expected="${#bmc_ips[@]}"
     if [ "${expected}" -eq 0 ]; then
-        log "ERROR" "No DPU serials are configured for Zero Trust Redfish readiness"
+        log "ERROR" "No WORKER_<N>_DPU_BMC_IPS are configured for Zero Trust Redfish readiness"
         return 1
     fi
 
@@ -362,77 +353,31 @@ wait_for_zero_trust_dpu_redfish() {
     printf 'user = "root:%s"\n' "${escaped_password}" > "${curl_config}"
 
     local interval=10
-    local started_at current_time elapsed reachable ip bmc_ip_variable
+    local started_at current_time elapsed reachable ip
     started_at=$(date +%s)
 
-    if [ "${ZT_DPU_DISCOVERY_MODE}" = "static" ]; then
-        log "INFO" "Waiting up to ${WORKER_POWER_ON_DELAY}s for ${expected} configured DPU Redfish endpoint(s)..."
-
-        while true; do
-            reachable=0
-            while IFS= read -r variable; do
-                [ -n "${!variable:-}" ] || continue
-                bmc_ip_variable="${variable%_SERIAL}_BMC_IP"
-                ip="${!bmc_ip_variable}"
-                if _dpu_redfish_ready "${ip}" "${curl_config}"; then
-                    reachable=$((reachable + 1))
-                fi
-            done < <(list_dpu_serial_variables)
-
-            if [ "${reachable}" -ge "${expected}" ]; then
-                rm -f "${curl_config}"
-                trap - EXIT
-                log "INFO" "All ${expected} configured DPU Redfish endpoint(s) are ready"
-                return 0
-            fi
-
-            current_time=$(date +%s)
-            elapsed=$((current_time - started_at))
-            if [ "${elapsed}" -ge "${WORKER_POWER_ON_DELAY}" ]; then
-                rm -f "${curl_config}"
-                trap - EXIT
-                log "ERROR" "Only ${reachable}/${expected} configured DPU Redfish endpoint(s) became ready within ${WORKER_POWER_ON_DELAY}s"
-                return 1
-            fi
-
-            log "INFO" "DPU Redfish readiness: ${reachable}/${expected}; retrying in ${interval}s..."
-            sleep "${interval}"
-        done
-    fi
-
-    local start_value end_value
-    start_value=$(_ipv4_to_integer "${ZT_DPU_BMC_IP_RANGE_START}")
-    end_value=$(_ipv4_to_integer "${ZT_DPU_BMC_IP_RANGE_END}")
-
-    log "INFO" "Waiting up to ${WORKER_POWER_ON_DELAY}s for ${expected} DPU Redfish endpoint(s) in ${ZT_DPU_BMC_IP_RANGE_START}-${ZT_DPU_BMC_IP_RANGE_END}..."
-
-    local address_value
+    log "INFO" "Waiting up to ${WORKER_POWER_ON_DELAY}s for ${expected} configured DPU Redfish endpoint(s)..."
     while true; do
         reachable=0
-        address_value="${start_value}"
-        while [ "${address_value}" -le "${end_value}" ]; do
-            if [ $(( $(date +%s) - started_at )) -ge "${WORKER_POWER_ON_DELAY}" ]; then
-                break
-            fi
-            ip=$(_integer_to_ipv4 "${address_value}")
+        for ip in "${bmc_ips[@]}"; do
             if _dpu_redfish_ready "${ip}" "${curl_config}"; then
                 reachable=$((reachable + 1))
-                if [ "${reachable}" -ge "${expected}" ]; then
-                    rm -f "${curl_config}"
-                    trap - EXIT
-                    log "INFO" "All ${expected} required DPU Redfish endpoint(s) are ready"
-                    return 0
-                fi
             fi
-            address_value=$((address_value + 1))
         done
+
+        if [ "${reachable}" -ge "${expected}" ]; then
+            rm -f "${curl_config}"
+            trap - EXIT
+            log "INFO" "All ${expected} configured DPU Redfish endpoint(s) are ready"
+            return 0
+        fi
 
         current_time=$(date +%s)
         elapsed=$((current_time - started_at))
         if [ "${elapsed}" -ge "${WORKER_POWER_ON_DELAY}" ]; then
             rm -f "${curl_config}"
             trap - EXIT
-            log "ERROR" "Only ${reachable}/${expected} DPU Redfish endpoint(s) became ready within ${WORKER_POWER_ON_DELAY}s"
+            log "ERROR" "Only ${reachable}/${expected} configured DPU Redfish endpoint(s) became ready within ${WORKER_POWER_ON_DELAY}s"
             return 1
         fi
 

@@ -254,15 +254,17 @@ deploy-zt-dpu-services: prepare-zt-dpu-services
 	@$(POST_INSTALL_SCRIPT) apply-zt-services
 
 .PHONY: scale-out-zt-dpus
-scale-out-zt-dpus: validate-zt-mode prepare-dpf-manifests prepare-zt-dpu-services
+scale-out-zt-dpus: validate-zt-mode prepare-dpf-manifests
 	@$(WORKER_SCRIPT) poweron-workers
-	@$(POST_INSTALL_SCRIPT) update-zt-hbn-config
 	@$(DPF_SCRIPT) scale-out-zero-trust-dpus
+	@$(POST_INSTALL_SCRIPT) prepare-zt-services
+	@$(POST_INSTALL_SCRIPT) update-zt-hbn-config
 	@$(POST_INSTALL_SCRIPT) print-zt-provisioning-instructions
 
-.PHONY: scale-in-zt-dpu
-scale-in-zt-dpu: validate-zt-mode prepare-dpf-manifests prepare-zt-dpu-services
-	@$(DPF_SCRIPT) scale-in-zero-trust-dpu "$(DPU_SERIAL)"
+.PHONY: scale-in-zt-dpus
+scale-in-zt-dpus: validate-zt-mode
+	@$(DPF_SCRIPT) scale-in-zero-trust-dpus "$(DPU_NODE)"
+	@$(POST_INSTALL_SCRIPT) prepare-zt-services
 	@$(POST_INSTALL_SCRIPT) update-zt-hbn-config
 
 .PHONY: deploy-observability
@@ -594,8 +596,8 @@ help:
 	@echo "  deploy-dpu-services - Deploy DPU services to the cluster"
 	@echo "  run-custom-postinstall-script - Run CUSTOM_POSTINSTALL_SCRIPT (file or http(s) URL, with args); also last make all step"
 	@echo "  deploy-zt-dpu-services - Apply and verify Zero Trust services and hosted-cluster RBAC"
-	@echo "  scale-out-zt-dpus - Add configured Zero Trust DPUs and refresh per-DPU services"
-	@echo "  scale-in-zt-dpu - Remove one static-inventory Zero Trust DPU (usage: make scale-in-zt-dpu DPU_SERIAL=<serial>)"
+	@echo "  scale-out-zt-dpus - Create DPUNodes for hosts added to WORKER_<N>_DPU_BMC_IPS and refresh per-DPU services"
+	@echo "  scale-in-zt-dpus - Remove one host's Zero Trust DPUNode and DPUs (usage: make scale-in-zt-dpus DPU_NODE=dpu-node-worker-<N>)"
 	@echo "  enable-kata       - OSC (inert KataConfig) + kata-coldplug on worker-dpu (also last make all step when KATA_ENABLED=true)"
 	@echo "  enable-argus      - Install the DOCA Argus DPU service (requires ARGUS_ENABLED=true)"
 	@echo "  deploy-kata-test  - Deploy kata-dpu-test Deployment (KATA_TEST_REPLICAS, default 1)"
