@@ -25,9 +25,11 @@ RUN pip3 install aicli
 
 # Default to vfs storage driver for nested container builds (overlay over
 # overlayfs is unsupported without fuse-overlayfs).
-RUN sed -i 's/^driver = "overlay"/driver = "vfs"/' /usr/share/containers/storage.conf
+RUN sed -i 's/^driver = "overlay"/driver = "vfs"/' /usr/share/containers/storage.conf && \
+    printf '[containers]\nuserns = "host"\n' >> /etc/containers/containers.conf
 
-# Get the source code in there
+ENV HOME=/root/dpf-ci
+
 WORKDIR /root/dpf-ci
 
 COPY . .
@@ -44,7 +46,13 @@ RUN chmod g=u /etc/passwd /etc/group && \
     touch /etc/subuid /etc/subgid && \
     chmod g=u /etc/subuid /etc/subgid
 
+COPY ci/uid-setup.sh /uid-setup.sh
 COPY ci/podman-entrypoint.sh /podman-entrypoint.sh
-RUN chmod +rx /podman-entrypoint.sh
+RUN chmod +rx /uid-setup.sh /podman-entrypoint.sh
+
+# BASH_ENV is sourced by bash for non-interactive shells (e.g. bash -c).
+# This ensures passwd/subuid entries are created even when Prow overrides
+# the container ENTRYPOINT.
+ENV BASH_ENV=/uid-setup.sh
 
 ENTRYPOINT ["/podman-entrypoint.sh"]
