@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Entrypoint for rootless podman in OpenShift CI pods.
-# OpenShift runs containers as an arbitrary UID with GID 0 supplementary.
-# This script creates the passwd/subuid entries that rootless podman needs.
+# Delegates passwd/subuid setup to uid-setup.sh (also used via BASH_ENV
+# when Prow overrides the ENTRYPOINT), then configures podman storage.
 
-if [ ! -d "${HOME}" ]; then
-  mkdir -p "${HOME}"
-fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=ci/uid-setup.sh
+source "${SCRIPT_DIR}/uid-setup.sh" 2>/dev/null \
+  || source /uid-setup.sh 2>/dev/null \
+  || true
 
 # Podman storage and registry configuration
 if [ ! -d "${HOME}/.config/containers" ]; then
@@ -25,22 +27,5 @@ driver = "vfs"
 EOF
   fi
 fi
-
-# Create passwd entry for the arbitrary UID if missing
-if ! whoami &>/dev/null; then
-  if [ -w /etc/passwd ]; then
-    echo "${USER_NAME:-user}:x:$(id -u):0:${USER_NAME:-user} user:${HOME}:/bin/bash" >> /etc/passwd
-    echo "${USER_NAME:-user}:x:$(id -u):" >> /etc/group
-  fi
-fi
-
-# Create subuid/subgid ranges for rootless podman.
-# Start just above the running UID to avoid overlap (the third field is the
-# count, not an end ID). Works for any UID, including OpenShift's arbitrary
-# high UIDs like 1000650000.
-USER=$(whoami)
-START_ID=$(( $(id -u) + 1 ))
-echo "${USER}:${START_ID}:65536" > /etc/subuid
-echo "${USER}:${START_ID}:65536" > /etc/subgid
 
 exec "$@"
