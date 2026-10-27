@@ -25,8 +25,8 @@ COPY --from=helm-cli /usr/bin/helm /usr/bin/helm
 # Install aicli
 RUN pip3 install aicli
 
-# Default to vfs storage driver for nested container builds (overlay over
-# overlayfs is unsupported without fuse-overlayfs).
+# Default to vfs storage driver for nested container builds (overlay
+# requires privileges not available in CI pods).
 RUN sed -i 's/^driver = "overlay"/driver = "vfs"/' /etc/containers/storage.conf
 
 ENV HOME=/root/dpf-ci
