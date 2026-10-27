@@ -52,12 +52,15 @@ fi
 
 # Ensure per-user podman storage config uses vfs and a clean graphroot
 # so no pre-existing overlay database causes a driver mismatch.
+_UID_VFS_ROOT="/tmp/podman-vfs"
 if [ ! -f "${HOME}/.config/containers/storage.conf" ]; then
-  mkdir -p "${HOME}/.config/containers" 2>/dev/null || true
-  cat > "${HOME}/.config/containers/storage.conf" <<'STOREOF'
+  mkdir -p "${HOME}/.config/containers" "${_UID_VFS_ROOT}" 2>/dev/null || true
+  cat > "${HOME}/.config/containers/storage.conf" <<STOREOF
 [storage]
 driver = "vfs"
+graphroot = "${_UID_VFS_ROOT}"
 STOREOF
 fi
+unset _UID_VFS_ROOT
 
 unset _UID_CUR _UID_DESIRED_NAME _UID_CUR_NAME
