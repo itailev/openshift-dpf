@@ -25,8 +25,7 @@ RUN pip3 install aicli
 
 # Default to vfs storage driver for nested container builds (overlay over
 # overlayfs is unsupported without fuse-overlayfs).
-RUN sed -i 's/^driver = "overlay"/driver = "vfs"/' /usr/share/containers/storage.conf && \
-    printf '[containers]\nuserns = "host"\n' >> /etc/containers/containers.conf
+RUN sed -i 's/^driver = "overlay"/driver = "vfs"/' /usr/share/containers/storage.conf
 
 ENV HOME=/root/dpf-ci
 
@@ -41,8 +40,9 @@ RUN chmod 777 /root/dpf-ci -R
 # Rootless podman setup for OpenShift's arbitrary UID (runs as non-root
 # with GID 0 supplementary). Follows the nested-podman CI image pattern.
 RUN chmod g=u /etc/passwd /etc/group && \
-    setcap cap_setuid+ep /usr/bin/newuidmap && \
-    setcap cap_setgid+ep /usr/bin/newgidmap && \
+    setcap -r /usr/bin/newuidmap && \
+    setcap -r /usr/bin/newgidmap && \
+    chmod u+s /usr/bin/newuidmap /usr/bin/newgidmap && \
     touch /etc/subuid /etc/subgid && \
     chmod g=u /etc/subuid /etc/subgid
 
