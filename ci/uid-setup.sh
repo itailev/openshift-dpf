@@ -40,11 +40,14 @@ elif [ -w /etc/passwd ]; then
 fi
 
 # Create subuid/subgid ranges for rootless podman.
+# Use the effective username (may differ from _UID_DESIRED_NAME if the
+# account already existed with a non-numeric name we chose to keep).
 if [ -w /etc/subuid ]; then
+  _UID_EFFECTIVE_NAME="$(id -un 2>/dev/null || echo "${_UID_DESIRED_NAME}")"
   _UID_SETUP_START=$(( _UID_CUR + 1 ))
-  echo "${_UID_DESIRED_NAME}:${_UID_SETUP_START}:65536" > /etc/subuid
-  echo "${_UID_DESIRED_NAME}:${_UID_SETUP_START}:65536" > /etc/subgid
-  unset _UID_SETUP_START
+  echo "${_UID_EFFECTIVE_NAME}:${_UID_SETUP_START}:65536" > /etc/subuid
+  echo "${_UID_EFFECTIVE_NAME}:${_UID_SETUP_START}:65536" > /etc/subgid
+  unset _UID_SETUP_START _UID_EFFECTIVE_NAME
 fi
 
 unset _UID_CUR _UID_DESIRED_NAME _UID_CUR_NAME
