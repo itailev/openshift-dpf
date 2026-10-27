@@ -40,9 +40,11 @@ RUN chmod 777 /root/dpf-ci -R
 # Rootless podman setup for OpenShift's arbitrary UID (runs as non-root
 # with GID 0 supplementary). Follows the nested-podman CI image pattern.
 RUN chmod g=u /etc/passwd /etc/group && \
-    setcap -r /usr/bin/newuidmap && \
-    setcap -r /usr/bin/newgidmap && \
-    chmod u+s /usr/bin/newuidmap /usr/bin/newgidmap && \
+    cat /usr/bin/newuidmap > /tmp/newuidmap && \
+    cat /usr/bin/newgidmap > /tmp/newgidmap && \
+    mv /tmp/newuidmap /usr/bin/newuidmap && \
+    mv /tmp/newgidmap /usr/bin/newgidmap && \
+    chmod 4755 /usr/bin/newuidmap /usr/bin/newgidmap && \
     touch /etc/subuid /etc/subgid && \
     chmod g=u /etc/subuid /etc/subgid
 
