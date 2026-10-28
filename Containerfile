@@ -12,7 +12,8 @@ COPY --from=oc-cli /usr/bin/oc /usr/bin/oc
 RUN ln -s /usr/bin/oc /usr/bin/kubectl
 
 RUN dnf install -y --allowerasing findutils gettext git golang jq make openssh-clients \
-      python3-devel python3-pip rsync && \
+      python3.12 python3.12-pip python3.12-devel rsync && \
+    ln -sf /usr/bin/pip3.12 /usr/bin/pip3 && \
     rpm --import https://www.centos.org/keys/RPM-GPG-KEY-CentOS-Official && \
     dnf install -y --repofrompath='cs9-appstream,https://mirror.stream.centos.org/9-stream/AppStream/$basearch/os/' \
       --setopt=cs9-appstream.gpgkey=https://www.centos.org/keys/RPM-GPG-KEY-CentOS-Official \
@@ -25,10 +26,6 @@ COPY --from=helm-cli /usr/bin/helm /usr/bin/helm
 # Install aicli
 RUN pip3 install aicli
 
-# Default to vfs storage driver for nested container builds (overlay
-# requires privileges not available in CI pods).
-RUN sed -i 's/^driver = "overlay"/driver = "vfs"/' /etc/containers/storage.conf
-
 ENV HOME=/root/dpf-ci
 
 WORKDIR /root/dpf-ci
@@ -37,14 +34,3 @@ COPY . .
 
 # Make workspace writable for OpenShift's arbitrary user IDs
 RUN chmod 777 /root/dpf-ci -R
-
-COPY ci/uid-setup.sh /uid-setup.sh
-COPY ci/podman-entrypoint.sh /podman-entrypoint.sh
-RUN chmod +rx /uid-setup.sh /podman-entrypoint.sh
-
-# BASH_ENV is sourced by bash for non-interactive shells (e.g. bash -c).
-# This ensures passwd/subuid entries are created even when Prow overrides
-# the container ENTRYPOINT.
-ENV BASH_ENV=/uid-setup.sh
-
-ENTRYPOINT ["/podman-entrypoint.sh"]
