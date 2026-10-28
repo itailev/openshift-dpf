@@ -13,7 +13,6 @@ RUN ln -s /usr/bin/oc /usr/bin/kubectl
 
 RUN dnf install -y --allowerasing findutils gettext git golang jq make openssh-clients \
       python3.12 python3.12-pip python3.12-devel rsync && \
-    ln -sf /usr/bin/python3.12 /usr/bin/python3 && \
     ln -sf /usr/bin/pip3.12 /usr/bin/pip3 && \
     rpm --import https://www.centos.org/keys/RPM-GPG-KEY-CentOS-Official && \
     dnf install -y --repofrompath='cs9-appstream,https://mirror.stream.centos.org/9-stream/AppStream/$basearch/os/' \
