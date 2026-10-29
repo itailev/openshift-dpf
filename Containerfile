@@ -1,7 +1,6 @@
-ARG BASE_IMAGE=quay.io/openshift/ci:ci_nested-podman_latest
 FROM docker.io/alpine/helm:3 as helm-cli
 FROM quay.io/openshift/origin-cli:4.22 as oc-cli
-FROM ${BASE_IMAGE}
+FROM registry.access.redhat.com/ubi10/ubi:latest
 
 LABEL org.opencontainers.image.authors="Red Hat Ecosystem Engineering"
 
@@ -11,12 +10,10 @@ USER root
 COPY --from=oc-cli /usr/bin/oc /usr/bin/oc
 RUN ln -s /usr/bin/oc /usr/bin/kubectl
 
-RUN dnf install -y --allowerasing findutils gettext git golang jq make openssh-clients \
-      python3.12 python3.12-pip python3.12-devel rsync && \
-    ln -sf /usr/bin/pip3.12 /usr/bin/pip3 && \
-    rpm --import https://www.centos.org/keys/RPM-GPG-KEY-CentOS-Official && \
-    dnf install -y --repofrompath='cs9-appstream,https://mirror.stream.centos.org/9-stream/AppStream/$basearch/os/' \
-      --setopt=cs9-appstream.gpgkey=https://www.centos.org/keys/RPM-GPG-KEY-CentOS-Official \
+RUN dnf install -y --allowerasing findutils gettext git golang jq make openssh-clients podman python3-devel python3-pip rsync && \
+    rpm --import https://www.centos.org/keys/RPM-GPG-KEY-CentOS-Official-SHA256 && \
+    dnf install -y --repofrompath='cs10-appstream,https://mirror.stream.centos.org/10-stream/AppStream/$basearch/os/' \
+      --setopt=cs10-appstream.gpgkey=https://www.centos.org/keys/RPM-GPG-KEY-CentOS-Official-SHA256 \
       libvirt-client virt-install && \
     dnf clean all
 
@@ -26,8 +23,7 @@ COPY --from=helm-cli /usr/bin/helm /usr/bin/helm
 # Install aicli
 RUN pip3 install aicli
 
-ENV HOME=/root/dpf-ci
-
+# Get the source code in there
 WORKDIR /root/dpf-ci
 
 COPY . .
