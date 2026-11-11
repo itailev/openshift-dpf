@@ -941,7 +941,10 @@ function apply_dpf() {
     apply_namespaces
     deploy_cert_manager
 
-    apply_dpu_agent_bootstrap_auth
+    # Host-trusted DPU agents use a bootstrap-token kubeconfig only after DPF 26.4.
+    if [ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" ] || dpf_version_gt_26_4; then
+        apply_dpu_agent_bootstrap_auth
+    fi
     
     # Install/upgrade DPF Operator using helm (idempotent operation)
     log "INFO" "Installing/upgrading DPF Operator to $DPF_VERSION..."

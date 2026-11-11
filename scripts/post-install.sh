@@ -31,6 +31,8 @@ mkdir -p "${GENERATED_ZT_SERVICE_DIR}"
 # List of files that need special processing (excluded from direct copy)
 HOST_TRUSTED_SPECIAL_FILES=(
     "hbn-ovn-ipam.yaml"
+    "hbn-loopback-ipam.yaml"
+    "ovn-iface.yaml"
     "dpu-service-nads.yaml"
     "dpuflavor-1500.yaml"
     "dpuflavor-9000.yaml"
@@ -120,6 +122,9 @@ function prepare_zero_trust_service_manifests() {
         "<HBN_IMAGE_TAG>" "${hbn_image_tag}" \
         "<DPU_VALUES>" "${dpu_values}"
 
+    local dpf_api_fields=()
+    dpf_api_field_replacements dpf_api_fields
+
     local manifest
     for manifest in \
         dpuserviceinterface \
@@ -127,7 +132,8 @@ function prepare_zero_trust_service_manifests() {
         dpuservicenad; do
         update_file_multi_replace \
             "${ZERO_TRUST_POST_INSTALL_DIR}/${manifest}.yaml" \
-            "${GENERATED_ZT_SERVICE_DIR}/${manifest}-zero-trust.yaml"
+            "${GENERATED_ZT_SERVICE_DIR}/${manifest}-zero-trust.yaml" \
+            "${dpf_api_fields[@]}"
     done
 
     update_file_multi_replace \
@@ -426,12 +432,24 @@ function update_hbn_ovn_manifests() {
         log [ERROR] "DPU_HOST_CIDR environment variable is not set. Please set it to the DPU nodes subnet (e.g., 10.6.135.0/24)"
         return 1
     fi
+    local dpf_api_fields=()
+    dpf_api_field_replacements dpf_api_fields
+
     # Update hbn-ovn-ipam.yaml
     update_file_multi_replace \
         "${HOST_TRUSTED_POST_INSTALL_DIR}/hbn-ovn-ipam.yaml" \
         "${GENERATED_POST_INSTALL_DIR}/hbn-ovn-ipam.yaml" \
+        "${dpf_api_fields[@]}" \
         "<VTEP_CIDR>" \
         "${VTEP_CIDR}"
+
+    local manifest
+    for manifest in hbn-loopback-ipam ovn-iface; do
+        update_file_multi_replace \
+            "${HOST_TRUSTED_POST_INSTALL_DIR}/${manifest}.yaml" \
+            "${GENERATED_POST_INSTALL_DIR}/${manifest}.yaml" \
+            "${dpf_api_fields[@]}"
+    done
 
     # Update ovn-configuration.yaml for DPUDeployment
     if [ -f "${HOST_TRUSTED_POST_INSTALL_DIR}/ovn-configuration.yaml" ]; then

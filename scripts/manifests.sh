@@ -219,9 +219,13 @@ prepare_zero_trust_objects() {
 
     resolve_zero_trust_bfb_registry_host bfb_registry_host || return 1
 
+    local dpf_api_fields=()
+    dpf_api_field_replacements dpf_api_fields
+
     update_file_multi_replace \
         "$MANIFESTS_DIR/dpf-installation/zero-trust/dpfoperatorconfig.yaml" \
         "$GENERATED_DIR/dpfoperatorconfig.yaml" \
+        "${dpf_api_fields[@]}" \
         "<HOST_CLUSTER_API>" "$HOST_CLUSTER_API" \
         "<FLANNEL_CONFIG>" "$flannel_config" \
         "<NODES_MTU>" "$NODES_MTU" \
@@ -345,9 +349,12 @@ prepare_dpf_manifests() {
     if [ "${DPF_DEPLOYMENT_MODE}" = "zero-trust" ]; then
         prepare_zero_trust_objects "${flannel_config}" || return 1
     else
+        local dpf_api_fields=()
+        dpf_api_field_replacements dpf_api_fields
         update_file_multi_replace \
             "$MANIFESTS_DIR/dpf-installation/dpfoperatorconfig.yaml" \
             "$GENERATED_DIR/dpfoperatorconfig.yaml" \
+            "${dpf_api_fields[@]}" \
             "<CLUSTER_NAME>" "$CLUSTER_NAME" \
             "<BASE_DOMAIN>" "$BASE_DOMAIN" \
             "<SRIOV_DP_RESOURCE_PREFIX>" "$SRIOV_DP_RESOURCE_PREFIX" \

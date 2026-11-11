@@ -5,6 +5,6 @@ metadata:
   name: loopback
   namespace: dpf-operator-system
 spec:
-  network:
+  <IPAM_NETWORK_FIELD>:
     network: "11.0.0.0/24"
     prefixSize: 32

@@ -560,6 +560,43 @@ ocp_version_gte() {
     printf '%s\n%s\n' "$2" "$1" | sort -V -C
 }
 
+# DPF_VERSION is a chart version such as v26.4.1, 26.11.0-rc.1 or v30.1.0-latest.
+dpf_version_gt_26_4() {
+    local version="${DPF_VERSION#v}"
+    local major="${version%%.*}"
+    local rest="${version#*.}"
+    local minor="${rest%%[.-]*}"
+
+    if [[ ! "${major}" =~ ^[0-9]+$ || ! "${minor}" =~ ^[0-9]+$ ]]; then
+        log "WARN" "Cannot parse DPF_VERSION '${DPF_VERSION}'; using the DPF 26.4 manifest fields"
+        return 1
+    fi
+    (( major > 26 || (major == 26 && minor > 4) ))
+}
+
+# Placeholder pairs for the manifest fields DPF changed after 26.4: newer DPF
+# requires deploymentMode and the CNI installer, and renames the DPUServiceIPAM
+# network field. <OVN_INTERFACE> expands at the indentation of ovn-iface.yaml.
+dpf_api_field_replacements() {
+    local -n replacements=$1
+
+    if dpf_version_gt_26_4; then
+        replacements=(
+            "<DEPLOYMENT_MODE_FIELD>" "deploymentMode: ${DPF_DEPLOYMENT_MODE}"
+            "<CNI_INSTALLER_DISABLE>" "false"
+            "<IPAM_NETWORK_FIELD>" "network"
+            "<OVN_INTERFACE>" $'interfaceType: patch\n          patch:\n            peerBridge: br-ovn'
+        )
+    else
+        replacements=(
+            "<DEPLOYMENT_MODE_FIELD>" ""
+            "<CNI_INSTALLER_DISABLE>" "true"
+            "<IPAM_NETWORK_FIELD>" "ipv4Network"
+            "<OVN_INTERFACE>" "interfaceType: ovn"
+        )
+    fi
+}
+
 function ensure_ssh_key_in_home() {
     if [ ! -f "${SSH_KEY}" ]; then
         log "ERROR" "SSH public key file not found: ${SSH_KEY}. Set SSH_KEY in .env and place your .pub key there."
