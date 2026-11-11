@@ -32,6 +32,10 @@ spec:
     hostAgentDNSPolicy: Default
     dmsTimeout: 900
     nodeEffectRemovalTimeout: "3600s"
+    # DPF builds the registry URL from kubernetesAPIServerVIP only when it is
+    # an IP; the OpenShift API VIP is a hostname, so name the NodePort directly.
+    registry:
+      loadBalancerAddress: "https://<HOST_CLUSTER_API>:<ZT_BFB_REGISTRY_NODEPORT>"
     installInterface:
       installViaRedfish:
         bfbRegistryAddress: "<BFB_REGISTRY_HOST>:<ZT_BFB_REGISTRY_PORT>"

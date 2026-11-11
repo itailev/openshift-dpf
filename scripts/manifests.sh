@@ -230,7 +230,15 @@ prepare_zero_trust_objects() {
         "<FLANNEL_CONFIG>" "$flannel_config" \
         "<NODES_MTU>" "$NODES_MTU" \
         "<BFB_REGISTRY_HOST>" "$bfb_registry_host" \
-        "<ZT_BFB_REGISTRY_PORT>" "$ZT_BFB_REGISTRY_PORT"
+        "<ZT_BFB_REGISTRY_PORT>" "$ZT_BFB_REGISTRY_PORT" \
+        "<ZT_BFB_REGISTRY_NODEPORT>" "$ZT_BFB_REGISTRY_NODEPORT"
+
+    # DPF reads this ConfigMap to pin the bfb-registry NodePort, so it must exist
+    # before the DPFOperatorConfig; apply_remaining applies files in name order.
+    update_file_multi_replace \
+        "$MANIFESTS_DIR/dpf-installation/zero-trust/bfb-registry-nodeport.yaml" \
+        "$GENERATED_DIR/bfb-registry-nodeport.yaml" \
+        "<ZT_BFB_REGISTRY_NODEPORT>" "$ZT_BFB_REGISTRY_NODEPORT"
 
     update_file_multi_replace \
         "$MANIFESTS_DIR/dpf-installation/zero-trust/bmc-shared-password.yaml" \
